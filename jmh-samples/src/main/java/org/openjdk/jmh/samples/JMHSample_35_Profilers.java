@@ -30,19 +30,29 @@
  */
 package org.openjdk.jmh.samples;
 
+import com.esotericsoftware.kryo.Kryo;
+import com.esotericsoftware.kryo.io.Input;
+import com.esotericsoftware.kryo.io.Output;
+import org.apache.fury.Fury;
+import org.apache.fury.config.Language;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
 import org.openjdk.jmh.profile.ClassloaderProfiler;
 import org.openjdk.jmh.profile.DTraceAsmProfiler;
 import org.openjdk.jmh.profile.LinuxPerfProfiler;
 import org.openjdk.jmh.profile.StackProfiler;
+import org.openjdk.jmh.results.format.ResultFormatType;
 import org.openjdk.jmh.runner.Runner;
 import org.openjdk.jmh.runner.RunnerException;
 import org.openjdk.jmh.runner.options.Options;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
@@ -596,5 +606,183 @@ public class JMHSample_35_Profilers {
             Since program addresses change from fork to fork, it does not make sense to run perfasm with more than
             a single fork.
         */
+    }
+
+    @State(Scope.Thread)
+    @BenchmarkMode(Mode.Throughput)
+    @Fork(value = 1)
+    @Threads(value = 1)
+    @Warmup(iterations = 3, time = 2, timeUnit = TimeUnit.SECONDS)
+    @Measurement(iterations = 3, time = 2, timeUnit = TimeUnit.SECONDS)
+    public static class StringDeserialize {
+
+        @Param(value = {"1000", "100000"})
+        private int length;
+
+        @Param(value = {"ascii", "chinese", "auto"})
+        private String type;
+        private Kryo kryo;
+        private Fury fury;
+
+        private String item;
+        private byte[] furyBytes;
+        private byte[] kyroBytes;
+        @Setup()
+        public void setup() throws IOException {
+            kryo = new Kryo();
+            fury = Fury.builder().withLanguage(Language.JAVA)
+                    .requireClassRegistration(false)
+                    .withClassVersionCheck(false)
+                    .withAsyncCompilation(true)
+                    .withRefTracking(true)
+//                .withStringCompressed(false)
+//                .withAsyncCompilation(true)
+//                .withCodegen(true)
+                    .build();
+        }
+
+        @Setup(Level.Iteration)
+        public void setupIteration() throws IOException {
+            item = "";
+            if (type.equals("ascii")) {
+                for (int i = 0; i < length; ++i) {
+                    item += "a";
+                }
+            } else if (type.equals("chinese")) {
+                for (int i = 0; i < length; ++i) {
+                    item += "中";
+                }
+            } else if (type.equals("auto")) {
+                item = new String(Files.readAllBytes(Paths.get("/Users/duanchen/serialize/test.json")));
+                item = item.substring(0, Math.min(length, item.length()));
+            }
+            furyBytes = fury.serialize(item);
+            ByteArrayOutputStream buf = new ByteArrayOutputStream(4096 * 12);
+            Output output = new Output(buf);
+            buf.reset();
+            kryo.writeClassAndObject(output, item);
+            output.flush();
+            output.close();
+            kyroBytes = buf.toByteArray();
+        }
+
+        @Benchmark
+        public void testKryo(Blackhole blackhole) {
+            Input input = new Input(kyroBytes);
+            blackhole.consume(kryo.readClassAndObject(input));
+        }
+
+
+        @Benchmark
+        public void testFury(Blackhole blackhole) throws IOException {
+            blackhole.consume(fury.deserialize(furyBytes));
+        }
+
+        public static void main(String[] args) throws RunnerException {
+            Options opt = new OptionsBuilder()
+                    .include(JMHSample_35_Profilers.StringDeserialize.class.getSimpleName())
+                .result("StringDeserialize8.json")
+//                    .addProfiler(LinuxPerfProfiler.class).build();
+                .resultFormat(ResultFormatType.JSON).build();
+            new Runner(opt).run();
+        }
+    }
+
+    @State(Scope.Thread)
+    @BenchmarkMode(Mode.Throughput)
+    @Fork(value = 1)
+    @Threads(value = 1)
+    @Warmup(iterations = 3, time = 2, timeUnit = TimeUnit.SECONDS)
+    @Measurement(iterations = 3, time = 2, timeUnit = TimeUnit.SECONDS)
+    public static class StringSerialize {
+
+        @Param(value = {"1000", "100000"})
+        private int length;
+
+        @Param(value = {"ascii", "chinese", "auto"})
+        private String type;
+        private ByteArrayOutputStream buf;
+        private String item;
+        private Output output;
+        private Kryo kryo;
+        private Fury fury;
+
+        @Setup()
+        public void setup() throws IOException {
+            kryo = new Kryo();
+            fury = Fury.builder().withLanguage(Language.JAVA)
+                    .requireClassRegistration(false)
+                    .withClassVersionCheck(false)
+                    .withAsyncCompilation(true)
+                    .withRefTracking(true)
+//                .withStringCompressed(false)
+//                .withAsyncCompilation(true)
+//                .withCodegen(true)
+                    .build();
+        }
+
+        @Setup(Level.Iteration)
+        public void setupIteration() throws IOException {
+            buf = new ByteArrayOutputStream(4096 * 12);
+            output = new Output(buf);
+
+            item = "";
+            if (type.equals("ascii")) {
+                for (int i = 0; i < length; ++i) {
+                    item += "a";
+                }
+            } else if (type.equals("chinese")) {
+                for (int i = 0; i < length; ++i) {
+                    item += "中";
+                }
+            } else if (type.equals("auto")) {
+                item = new String(Files.readAllBytes(Paths.get("/Users/duanchen/serialize/test.json")));
+                item = item.substring(0, Math.min(length, item.length()));
+            }
+        }
+
+//    @Benchmark
+//    public void testJdk(Blackhole blackhole) throws IOException {
+//        buf.reset();
+//        ObjectOutputStream outputObject = new ObjectOutputStream(buf);
+//        outputObject.writeObject(item);
+//        outputObject.flush();
+//        outputObject.close();
+//        blackhole.consume(buf);
+//    }
+
+        @Benchmark
+        public void testKyro(Blackhole blackhole) {
+            buf.reset();
+            kryo.writeClassAndObject(output, item);
+            output.flush();
+            blackhole.consume(buf);
+        }
+
+
+        @Benchmark
+        public void testFury(Blackhole blackhole) throws IOException {
+            buf.reset();
+            fury.serialize(buf, item);
+            blackhole.consume(buf);
+        }
+
+
+//    @Benchmark
+//    public void testStringSerializer(Blackhole blackhole) throws IOException {
+//        buf.reset();
+//        StringValue.writeString(item, stream);
+//        stream.flush();
+//        blackhole.consume(buf);
+//    }
+
+        public static void main(String[] args) throws RunnerException {
+            Options opt = new OptionsBuilder()
+                    .include(JMHSample_35_Profilers.StringSerialize.class.getSimpleName())
+                .result("StringSerialize11.json")
+//                    .addProfiler(LinuxPerfProfiler.class).build();
+                .resultFormat(ResultFormatType.JSON).build();
+            new Runner(opt).run();
+        }
     }
 }
